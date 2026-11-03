@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 580" width="1100" height="580" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#64748b"/>
+    </marker>
+    <marker id="arHot" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#b45309"/>
+    </marker>
+    <style>
+      .box   { rx:10; ry:10; stroke-width:1.5; }
+      .t     { font-size:14px; font-weight:600; fill:#0f172a; }
+      .s     { font-size:11px; fill:#475569; }
+      .lbl   { font-size:11px; fill:#64748b; font-style:italic; }
+      .lblH  { font-size:11px; fill:#b45309; font-style:italic; font-weight:600; }
+      .lane  { font-size:12px; font-weight:700; letter-spacing:.08em; }
+    </style>
+  </defs>
+
+  <rect width="1100" height="580" fill="#ffffff"/>
+
+  <text x="40" y="38" font-size="19" font-weight="700" fill="#0f172a">Частина 4 — стрімінг у хмарі: платежі через Kinesis</text>
+  <text x="40" y="58" class="s">Той самий датасет і та сама швидкість (~20 платежів/с), що й у локальному Redpanda з частини 3</text>
+
+  <!-- lanes -->
+  <rect x="440" y="88" width="620" height="140" fill="#f1f5f9" rx="12"/>
+  <text x="456" y="108" class="lane" fill="#475569">BATCH — відповідь за хвилини</text>
+
+  <rect x="440" y="372" width="620" height="140" fill="#fff7ed" rx="12"/>
+  <text x="456" y="392" class="lane" fill="#b45309">REAL TIME — відповідь за секунди</text>
+
+  <!-- producer -->
+  <rect class="box" x="40" y="258" width="150" height="88" fill="#ede9fe" stroke="#8b5cf6"/>
+  <text x="115" y="288" class="t" text-anchor="middle">producer_kinesis.py</text>
+  <text x="115" y="306" class="s" text-anchor="middle">ноутбук, boto3</text>
+  <text x="115" y="322" class="s" text-anchor="middle">PutRecords, 500/батч</text>
+  <text x="115" y="338" class="s" text-anchor="middle">PartitionKey = invoiceId</text>
+
+  <!-- kinesis -->
+  <rect class="box" x="250" y="238" width="150" height="128" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="325" y="266" class="t" text-anchor="middle">Kinesis</text>
+  <text x="325" y="283" class="t" text-anchor="middle">Data Stream</text>
+  <text x="325" y="304" class="s" text-anchor="middle">1 шард</text>
+  <text x="325" y="320" class="s" text-anchor="middle">1 МіБ/с, 1000 зап./с</text>
+  <text x="325" y="336" class="s" text-anchor="middle">retention 24 год</text>
+  <text x="325" y="354" class="s" text-anchor="middle" font-weight="600">$0,015 / год</text>
+
+  <!-- batch lane boxes -->
+  <rect class="box" x="460" y="126" width="140" height="82" fill="#dcfce7" stroke="#22c55e"/>
+  <text x="530" y="152" class="t" text-anchor="middle">Firehose</text>
+  <text x="530" y="170" class="s" text-anchor="middle">буфер 1 МБ / 60 с</text>
+  <text x="530" y="186" class="s" text-anchor="middle">dt=!{timestamp}</text>
+  <text x="530" y="202" class="s" text-anchor="middle">$0,029 / ГБ</text>
+
+  <rect class="box" x="650" y="126" width="140" height="82" fill="#dcfce7" stroke="#22c55e"/>
+  <text x="720" y="152" class="t" text-anchor="middle">S3</text>
+  <text x="720" y="170" class="s" text-anchor="middle">stream/dt=YYYY-MM-DD/</text>
+  <text x="720" y="186" class="s" text-anchor="middle">JSON Lines</text>
+  <text x="720" y="202" class="s" text-anchor="middle">$0,023 / ГБ·міс</text>
+
+  <rect class="box" x="840" y="126" width="180" height="82" fill="#dcfce7" stroke="#22c55e"/>
+  <text x="930" y="152" class="t" text-anchor="middle">Glue Catalog + Athena</text>
+  <text x="930" y="170" class="s" text-anchor="middle">stream_events</text>
+  <text x="930" y="186" class="s" text-anchor="middle">SQL по сирих подіях</text>
+  <text x="930" y="202" class="s" text-anchor="middle">$5 / ТБ, мін. 10 МБ</text>
+
+  <!-- realtime lane boxes -->
+  <rect class="box" x="460" y="410" width="140" height="82" fill="#fed7aa" stroke="#f97316"/>
+  <text x="530" y="436" class="t" text-anchor="middle">Lambda</text>
+  <text x="530" y="454" class="s" text-anchor="middle">batch 500 / 10 с</text>
+  <text x="530" y="470" class="s" text-anchor="middle">вікно 1 хв (event time)</text>
+  <text x="530" y="486" class="s" text-anchor="middle">at-least-once</text>
+
+  <rect class="box" x="650" y="410" width="140" height="82" fill="#fed7aa" stroke="#f97316"/>
+  <text x="720" y="436" class="t" text-anchor="middle">DynamoDB</text>
+  <text x="720" y="454" class="s" text-anchor="middle">лічильники вікон</text>
+  <text x="720" y="470" class="s" text-anchor="middle">атомарний ADD</text>
+  <text x="720" y="486" class="s" text-anchor="middle">TTL 2 доби</text>
+
+  <rect class="box" x="840" y="410" width="180" height="82" fill="#fecaca" stroke="#ef4444"/>
+  <text x="930" y="436" class="t" text-anchor="middle">SNS → email</text>
+  <text x="930" y="454" class="s" text-anchor="middle">failure rate &gt; 10 %</text>
+  <text x="930" y="470" class="s" text-anchor="middle">не частіше 1 разу</text>
+  <text x="930" y="486" class="s" text-anchor="middle">на вікно+метод</text>
+
+  <!-- arrows -->
+  <path d="M190 302 L244 302" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#ar)"/>
+  <text x="217" y="294" class="lbl" text-anchor="middle">HTTPS</text>
+
+  <path d="M400 280 C 430 280, 430 167, 454 167" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#ar)"/>
+  <path d="M400 330 C 430 330, 430 451, 454 451" stroke="#b45309" stroke-width="2" fill="none" marker-end="url(#arHot)"/>
+  <text x="408" y="214" class="lbl">читач 1</text>
+  <text x="408" y="404" class="lblH">читач 2</text>
+
+  <path d="M600 167 L644 167" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#ar)"/>
+  <path d="M790 167 L834 167" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#ar)"/>
+  <path d="M600 451 L644 451" stroke="#b45309" stroke-width="2" fill="none" marker-end="url(#arHot)"/>
+  <path d="M790 451 L834 451" stroke="#b45309" stroke-width="2" fill="none" marker-end="url(#arHot)"/>
+
+  <!-- latency callouts -->
+  <text x="930" y="238" class="lbl" text-anchor="middle">затримка: ~60–120 с (буфер Firehose)</text>
+  <text x="930" y="528" class="lblH" text-anchor="middle">затримка: ~10–15 с (батч Lambda)</text>
+
+  <!-- key note -->
+  <rect x="40" y="398" width="370" height="114" fill="#fef2f2" stroke="#fca5a5" stroke-width="1.5" rx="10"/>
+  <text x="58" y="422" font-size="12" font-weight="700" fill="#b91c1c">Головна відмінність від частини 2</text>
+  <text x="58" y="443" class="s">Firehose партиціонує за <tspan font-weight="600">часом прибуття</tspan> (processing</text>
+  <text x="58" y="459" class="s">time), а не за часом події. Платіж о 23:59:58, що</text>
+  <text x="58" y="475" class="s">доїхав о 00:00:03, потрапляє в <tspan font-weight="600">завтрашню</tspan> партицію.</text>
+  <text x="58" y="494" class="s">Денний звіт по такому dt — ніколи не рівно доба.</text>
+
+  <!-- one shard note -->
+  <text x="325" y="392" class="s" text-anchor="middle">два незалежні читачі одного стріму:</text>
+  <text x="325" y="407" class="s" text-anchor="middle">кожен має власну позицію в лозі</text>
+</svg>

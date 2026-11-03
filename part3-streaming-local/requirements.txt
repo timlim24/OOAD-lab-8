@@ -1,0 +1,6 @@
+# Pure-Python Kafka client. Chosen over confluent-kafka deliberately:
+# confluent-kafka wraps librdkafka in C and publishes no wheel for Python 3.14,
+# so `pip install` tries to compile it and fails on a machine without the
+# librdkafka headers. kafka-python-ng needs no compiler and talks the same
+# protocol, which Redpanda implements.
+kafka-python-ng==2.2.3
