@@ -22,7 +22,7 @@ SELECT
   CASE ccy WHEN 980 THEN 'UAH' WHEN 840 THEN 'USD' WHEN 978 THEN 'EUR'
            ELSE CAST(ccy AS varchar) END          AS currency,
   count(*)                                        AS payments,
-  CAST(sum(finalAmount) AS decimal(38,0)) / 100   AS turnover
+  CAST(sum(finalAmount) AS decimal(38,2)) / 100   AS turnover
 FROM lab8.payments_parquet
 WHERE status = 'success'
 GROUP BY merchantId, merchantName, ccy

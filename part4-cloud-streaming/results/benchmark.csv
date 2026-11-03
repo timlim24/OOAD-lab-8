@@ -1,0 +1,11 @@
+label,data_scanned_bytes,engine_ms,total_ms,query_id
+p4_stream_count,42749714,1798,1963,bb617e71-d6fc-480d-a91e-964d1339e03c
+p4_failure_rate,42749714,987,1182,147c70b3-4da0-4256-9a62-0d81432db28f
+p4_processing_time_partition,42749714,964,1152,a660521e-a96b-44fd-9a6d-207cfde4cfe1
+p4_duplicates,85499428,1181,1362,628f11e0-6325-4239-b41f-5e5487aa337c
+p4_clean_count,84994600,1505,1723,e974ebf4-3618-4d56-a2ff-fabba0636440
+p4_final_count,169899172,1508,1699,0e39bd86-3c84-4385-b108-d4a936bb7a96
+p4_stream_final,83900764,1605,1794,55aca0d7-df12-45fc-88be-6ac8638a16dc
+p4_partition_proof,42496073,1138,1337,bdd28056-8a4e-4783-9a6e-9ba4c1ad178e
+p4_failure_by_method,42496073,781,960,2bfc0cdd-97f1-4fc0-bd33-8baa263315be
+p4_final_verified,84992146,1466,1637,9ce47d56-9ec1-43ab-95c9-3f832041bfee

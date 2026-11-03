@@ -22,6 +22,7 @@ changes is everything below the API call:
 """
 
 import argparse
+import hashlib
 import json
 import sys
 import time
@@ -29,6 +30,52 @@ from datetime import datetime
 
 import boto3
 from botocore.config import Config
+
+# Deliberately duplicated from part 3's producer.py instead of imported: that
+# module needs a Kafka client, and a Kinesis producer that cannot run without
+# kafka-python installed would be a silly dependency. The two copies must stay
+# in step, which the shared sha256 rule guarantees — both pipelines flip
+# exactly the same payments, so their results are comparable.
+FAILURE_REASONS = [
+    "Недостатньо коштів",
+    "Невірний CVV",
+    "Відмова банку-емітента",
+    "Перевищено ліміт",
+    "Таймаут 3-D Secure",
+]
+
+
+def should_fail(invoice_id: str, fail_rate: float) -> bool:
+    """Deterministic per payment: hash the id rather than roll a die, so two
+    runs flip the same payments and one payment's 3 events agree."""
+    if fail_rate <= 0:
+        return False
+    digest = hashlib.sha256(invoice_id.encode()).digest()
+    return int.from_bytes(digest[:4], "big") / 2**32 < fail_rate
+
+
+def make_failing(ev: dict) -> dict:
+    """Turn a terminal event into a failure.
+
+    Keeps the record self-consistent, because the consumer trusts it:
+    finalAmount must go to 0 (no money captured) and failureReason must appear
+    (it is absent on every non-failure event in the real data).
+
+    The reason is DERIVED FROM THE invoiceId, not drawn from an RNG. That is
+    not a stylistic choice. ~1% of the events in this dataset are byte-identical
+    redeliveries, and a per-call rng.choice() hands the two copies of one event
+    two different reasons — which stops them being duplicates at all. Measured:
+    with rng.choice the day's duplicate count fell from 1 001 to 920, i.e. the
+    failure injection silently destroyed 8% of exactly the thing this lab is
+    about detecting. Deriving from the id keeps every copy identical.
+    """
+    digest = hashlib.sha256(("reason:" + ev["invoiceId"]).encode()).digest()
+    ev = dict(ev)
+    ev["status"] = "failure"
+    ev["finalAmount"] = 0
+    ev["failureReason"] = FAILURE_REASONS[digest[0] % len(FAILURE_REASONS)]
+    return ev
+
 
 MAX_RECORDS = 500          # PutRecords hard limit
 MAX_BATCH_BYTES = 4 << 20  # 5 MiB limit; stay under it
@@ -39,6 +86,8 @@ def parse_ts(s: str) -> float:
 
 
 def load(path: str):
+    """Read the file and sort it by processing time, exactly as part 3 does,
+    so the two pipelines replay the same events in the same order."""
     events = []
     with open(path, encoding="utf-8") as fh:
         for line in fh:
@@ -91,6 +140,9 @@ def main() -> int:
     ap.add_argument("--rate", type=float, default=20.0, help="payments per second")
     ap.add_argument("--speed", type=float, default=None)
     ap.add_argument("--max-payments", type=int, default=None)
+    ap.add_argument("--fail-rate", type=float, default=0.0,
+                    help="force this share of payments to fail, so the SNS "
+                         "alert actually has something to fire on")
     ap.add_argument("--batch-interval", type=float, default=0.5,
                     help="flush the buffer at least this often")
     args = ap.parse_args()
@@ -110,7 +162,9 @@ def main() -> int:
     print(f"  payments        : {len(invoices):,}")
     print(f"  speed factor    : {speed:.1f}x")
     print(f"  wall duration   : {span/speed/60:.1f} min")
-    print()
+    if args.fail_rate:
+        print(f"  forced failures : {args.fail_rate:.0%} of payments")
+    print(flush=True)
 
     client = boto3.client(
         "kinesis", region_name=args.region,
@@ -120,6 +174,11 @@ def main() -> int:
     )
 
     stats = {"sent": 0, "throttled": 0, "dropped": 0}
+    forced = 0
+    # Threshold, not modulo: stats["sent"] grows by a whole batch at a time,
+    # so `sent % 5000 == 0` jumps straight over the multiple (4 800 -> 5 300)
+    # and the run prints nothing at all for minutes.
+    next_report = 5000
     batch, batch_bytes = [], 0
     seen = set()
     wall_start = time.monotonic()
@@ -138,6 +197,11 @@ def main() -> int:
             if args.max_payments and inv not in seen and len(seen) >= args.max_payments:
                 continue
             seen.add(inv)
+
+            if ev["status"] in ("success", "failure") and should_fail(inv, args.fail_rate):
+                if ev["status"] == "success":
+                    forced += 1
+                ev = make_failing(ev)
 
             due = (ts - t_first) / speed
             behind = due - (time.monotonic() - wall_start)
@@ -159,10 +223,12 @@ def main() -> int:
             if time.monotonic() - last_flush > args.batch_interval:
                 flush()
 
-            if stats["sent"] and stats["sent"] % 5000 == 0:
+            if stats["sent"] >= next_report:
                 el = time.monotonic() - wall_start
                 print(f"  sent {stats['sent']:>7,}  {len(seen):>6,} payments  "
                       f"{el:6.1f}s  {len(seen)/max(el,1e-9):5.1f} payments/s", flush=True)
+                while next_report <= stats["sent"]:
+                    next_report += 5000
 
     except KeyboardInterrupt:
         print("\ninterrupted — flushing")
@@ -173,6 +239,8 @@ def main() -> int:
     print()
     print(f"sent      : {stats['sent']:,} records for {len(seen):,} payments")
     print(f"throttled : {stats['throttled']:,} (retried)")
+    if forced:
+        print(f"forced to failure: {forced:,} payments")
     if stats["dropped"]:
         print(f"DROPPED   : {stats['dropped']:,}")
     print(f"wall time : {el:.1f}s ({len(seen)/max(el,1e-9):.1f} payments/s)")

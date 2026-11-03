@@ -1,0 +1,8 @@
+boto3==1.43.123
+
+# botocore[crt] is NOT optional here. If the machine authenticates with
+# `aws login` (the IAM Identity Center / login credential provider), botocore
+# refuses to load those credentials without the AWS Common Runtime extra and
+# fails with MissingDependencyException — even though the aws CLI itself works
+# fine in the same shell. Plain `pip install boto3` is not enough.
+botocore[crt]==1.43.123

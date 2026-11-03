@@ -49,8 +49,14 @@ fi
 #    1.2 GB / ~3500 objects... actually 31 objects, so this is quick.
 # -----------------------------------------------------------------------------
 echo "[2/4] syncing dataset (idempotent, skips what is already there)"
+# --copy-props none is required, not optional. By default the CLI preserves
+# tags and metadata on a server-side copy, which means it calls
+# GetObjectTagging on the SOURCE object. The public bucket grants s3:GetObject
+# but not s3:GetObjectTagging, so every copy fails with AccessDenied while the
+# data itself is perfectly readable. `none` copies the bytes and nothing else.
 aws s3 sync "${SRC}" "s3://${BUCKET}/payments/" \
-    --source-region "${REGION}" --region "${REGION}" --no-progress
+    --source-region "${REGION}" --region "${REGION}" --no-progress \
+    --copy-props none
 aws s3 ls "s3://${BUCKET}/payments/" --recursive --summarize | tail -3
 
 # -----------------------------------------------------------------------------

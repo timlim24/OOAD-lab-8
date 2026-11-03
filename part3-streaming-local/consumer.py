@@ -16,12 +16,29 @@ What it does, in the order it does it:
     python consumer.py --grace 0            # experiment 4
     python consumer.py &; python consumer.py   # experiment 2: two in one group
 
-The watermark here is the simplest one that works: the largest event time seen
-so far. It is monotonic by construction (max() never goes down) and it is the
-same idea Flink implements with ``BoundedOutOfOrderness``. What it cannot do is
-advance while the stream is idle, which is why there is also an inactivity
-flush at the bottom — without it the last few windows of a finite replay would
-never close and you would stare at a consumer that looks hung.
+The watermark is PER PARTITION, combined by taking the MINIMUM. That detail is
+not decoration, and getting it wrong is the most instructive bug in this lab.
+
+A single global ``max(modifiedDate)`` looks obviously right and is obviously
+wrong as soon as there is more than one partition. The consumer drains
+partitions at different speeds — one poll can return 500 records from
+partition 0 and none from partitions 1 and 2 — so a global max races ahead on
+whichever partition happens to be furthest along, and every record that then
+arrives from the slower partitions is "late". Measured on this topic with 3
+partitions: a global max rejected 56% of all events as late, with an average
+lateness of 6 649 seconds, against a true figure of ~1.7%.
+
+Taking the minimum across partitions fixes it, because the stream as a whole
+has only progressed as far as its slowest partition has. This is exactly what
+Flink does with per-split watermarks in ``WatermarkStrategy``, and why its API
+makes you think about idleness: a partition with no data at all would hold the
+minimum at -infinity forever, so one has to be excluded after
+``--idle-partition`` seconds of silence.
+
+What a watermark still cannot do is advance while the WHOLE stream is idle,
+which is why there is also an inactivity flush at the bottom — without it the
+last few windows of a finite replay would never close and you would stare at a
+consumer that looks hung.
 """
 
 import argparse
@@ -66,6 +83,12 @@ class WindowedFailureRate:
         # Value is the event time, so --dedup-ttl can evict by age.
         self.seen: dict[tuple, float] = {}
 
+        # partition -> largest event time seen on THAT partition, and when we
+        # last saw anything on it (monotonic clock, for the idleness rule).
+        self.part_wm: dict[object, float] = {}
+        self.part_seen_at: dict[object, float] = {}
+        self.idle_partition_s = 10.0
+
         self.watermark = float("-inf")
         self.closed_up_to = float("-inf")   # end of the most recent closed window
 
@@ -79,8 +102,31 @@ class WindowedFailureRate:
         self.max_seen_size = 0
         self.late_lags: list[float] = []
 
+    # -- watermark ---------------------------------------------------------
+    def _recompute_watermark(self) -> None:
+        """Global watermark = min over partitions that are not idle.
+
+        Monotonic by construction: each partition's own value only grows, the
+        idle set only shrinks the inputs, and the result is clamped against
+        the previous value so a partition dropping out can never move it back.
+        """
+        if not self.part_wm:
+            return
+        now = time.monotonic()
+        # A partition still sitting at -inf has been ASSIGNED but has not
+        # delivered its first record yet. It must hold the minimum down: its
+        # oldest event could be hours behind whatever the fast partitions are
+        # already showing us. Only the idleness rule may remove it.
+        active = [wm for p, wm in self.part_wm.items()
+                  if now - self.part_seen_at.get(p, now) <= self.idle_partition_s]
+        if not active:                      # everything idle: fall back to all
+            active = list(self.part_wm.values())
+        candidate = min(active)
+        if candidate > self.watermark:
+            self.watermark = candidate
+
     # -- ingest ------------------------------------------------------------
-    def add(self, ev: dict) -> None:
+    def add(self, ev: dict, partition: object = 0) -> None:
         self.n_total += 1
         ts = parse_ts(ev["modifiedDate"])
 
@@ -115,8 +161,9 @@ class WindowedFailureRate:
                 cell[1] += 1
             self.n_counted += 1
 
-        if ts > self.watermark:
-            self.watermark = ts
+        if ts > self.part_wm.get(partition, float("-inf")):
+            self.part_wm[partition] = ts
+        self.part_seen_at[partition] = time.monotonic()
 
     # -- window lifecycle --------------------------------------------------
     def close_ready(self) -> None:
@@ -201,6 +248,9 @@ class WindowedFailureRate:
         print(f"  dedup set, final size  : {len(self.seen):,}")
         print(f"  dedup set, peak size   : {self.max_seen_size:,}")
         print(f"  grace period           : {self.grace_s}s")
+        if len(self.part_wm) > 1:
+            print(f"  per-partition watermark: "
+                  + ", ".join(f"p{p}={fmt(wm)}" for p, wm in sorted(self.part_wm.items())))
 
 
 def main() -> int:
@@ -219,10 +269,19 @@ def main() -> int:
                     help="evict dedup keys older than N seconds of event time")
     ap.add_argument("--idle-flush", type=float, default=15.0,
                     help="flush all open windows after this many idle seconds")
+    ap.add_argument("--idle-partition", type=float, default=10.0,
+                    help="drop a silent partition out of the watermark minimum "
+                         "after this many seconds, or one quiet partition "
+                         "stalls every window")
+    ap.add_argument("--exit-after-idle", type=float, default=0,
+                    help="stop after this many idle seconds (0 = run forever). "
+                         "A real monitor never exits; this exists so a replay "
+                         "experiment finishes on its own and is reproducible.")
     args = ap.parse_args()
 
     state = WindowedFailureRate(args.window, args.grace, args.threshold,
                                 args.min_events, args.dedup_ttl)
+    state.idle_partition_s = args.idle_partition
 
     class Rebalance(ConsumerRebalanceListener):
         """Prints what experiment 2 is about to show you in the Console."""
@@ -231,10 +290,27 @@ def main() -> int:
             if revoked:
                 print(f"[rebalance] revoked:  "
                       f"{sorted(tp.partition for tp in revoked)}", flush=True)
+                # Someone else owns these now. Leaving them in the minimum
+                # would freeze the watermark at whatever they last reached.
+                for tp in revoked:
+                    state.part_wm.pop(tp.partition, None)
+                    state.part_seen_at.pop(tp.partition, None)
 
         def on_partitions_assigned(self, assigned):
             print(f"[rebalance] assigned: "
                   f"{sorted(tp.partition for tp in assigned)}", flush=True)
+            # Register every assigned partition at -inf BEFORE any record is
+            # read. Without this the minimum is taken over the partitions that
+            # happened to answer first, the watermark races ahead to whatever
+            # the fastest one reached, and everything the slower partitions
+            # then deliver is rejected as late. Measured on this topic while
+            # catching up from the start of the log: 41% of all events, with
+            # an average lateness of 2.5 hours. With it: ~1.7%, matching the
+            # offline reference run.
+            now = time.monotonic()
+            for tp in assigned:
+                state.part_wm.setdefault(tp.partition, float("-inf"))
+                state.part_seen_at.setdefault(tp.partition, now)
 
     consumer = KafkaConsumer(
         bootstrap_servers=args.bootstrap,
@@ -286,6 +362,10 @@ def main() -> int:
                           f"on a finite replay somebody has to.", flush=True)
                     state.flush_all()
                     idle_flushed = True
+                if args.exit_after_idle and idle > args.exit_after_idle:
+                    print(f"\n[idle {idle:.0f}s] --exit-after-idle reached, "
+                          f"stopping.", flush=True)
+                    running = False
                 continue
 
             last_msg = time.monotonic()
@@ -299,12 +379,15 @@ def main() -> int:
                         print(f"bad message at {tp.topic}:{tp.partition}"
                               f"@{rec.offset}: {exc}", file=sys.stderr)
                         continue
-                    state.add(ev)
+                    state.add(ev, partition=tp.partition)
 
-            # Close once per batch rather than once per record: the watermark
-            # can only have moved forward by the batch maximum anyway, and
+            # Recompute the combined watermark once the whole batch is folded
+            # in — a batch usually carries records from several partitions, and
+            # the minimum is only meaningful after all of them are accounted
+            # for. Then close once per batch rather than once per record:
             # scanning the open windows per record is what would make this
             # consumer the bottleneck.
+            state._recompute_watermark()
             state.close_ready()
 
             now = time.monotonic()
@@ -323,10 +406,17 @@ def main() -> int:
         state.flush_all()
         try:
             consumer.commit()
-        except KafkaError:
-            pass
-        consumer.close()
+        except KafkaError as exc:
+            print(f"final commit failed: {exc}", file=sys.stderr)
         state.summary()
+        # close() leaves the group cleanly so the other members rebalance at
+        # once instead of waiting out session.timeout.ms. It can block, and by
+        # this point the numbers are already printed, so a failure here must
+        # not look like a failed run.
+        try:
+            consumer.close(autocommit=False)
+        except Exception as exc:
+            print(f"close() failed: {exc}", file=sys.stderr)
 
     return 0
 

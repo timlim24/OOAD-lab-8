@@ -76,9 +76,9 @@ ORDER BY paymentMethod, device, source;
 --     double-count — a quiet, roughly 1% overstatement of revenue that no
 --     sanity check catches.
 SELECT
-  (SELECT CAST(sum(finalAmount) AS decimal(38,0)) / 100
+  (SELECT CAST(sum(finalAmount) AS decimal(38,2)) / 100
      FROM lab8.payment_events WHERE status = 'success' AND ccy = 980) AS uah_raw,
-  (SELECT CAST(sum(finalAmount) AS decimal(38,0)) / 100
+  (SELECT CAST(sum(finalAmount) AS decimal(38,2)) / 100
      FROM lab8.payments        WHERE status = 'success' AND ccy = 980) AS uah_dedup;
 
 -- (d) Unique customers / merchant reach: unaffected by the history (COUNT

@@ -2,38 +2,129 @@
 
 ```bash
 ./setup.sh crawler
-aws glue get-crawler --name ooad-lab8-payments-crawler --query 'Crawler.State' --output text
 aws glue get-table --database-name lab8_crawled --name payments \
-    --query 'Table.{cols:StorageDescriptor.Columns, parts:PartitionKeys}' --output table
+    --query 'Table.{columns:StorageDescriptor.Columns,partitionKeys:PartitionKeys,
+                    serde:StorageDescriptor.SerdeInfo.SerializationLibrary,
+                    recordCount:Parameters.recordCount,objectCount:Parameters.objectCount}'
 ```
 
-> **Вставити сюди фактичний вивід `get-table` (або скриншот із консолі Glue).**
+Результат: `State: READY`, `LastCrawl.Status: SUCCEEDED`, зареєстровано
+**31 партицію**.
 
 ## Порівняння схем
 
-| Поле | Наша (`01_create_table.sql`) | Crawler | Збіг? |
+| Поле | Наша ([01_create_table.sql](../sql/01_create_table.sql)) | Crawler | Збіг |
 |---|---|---|---|
-| `invoiceid` | string | | |
-| `status` | string | | |
-| `failurereason` | string | | |
-| `amount` | bigint | | |
-| `finalamount` | bigint | | |
-| `ccy` | int | | |
-| `reference` | string | | |
-| `createddate` | string | | |
-| `modifieddate` | string | | |
-| `receivedat` | string | | |
-| `merchantid` | string | | |
-| `merchantname` | string | | |
-| `mcc` | int | | |
-| `customerid` | string | | |
-| `paymentmethod` | string | | |
-| `device` | string | | |
-| `dt` | **партиція** string | | |
+| `invoiceid` | string | string | ✅ |
+| `status` | string | string | ✅ |
+| `failurereason` | string | string | ✅ (але див. нижче) |
+| `amount` | **bigint** | **int** | ❌ |
+| `finalamount` | **bigint** | **int** | ❌ |
+| `ccy` | int | int | ✅ |
+| `reference` | string | string | ✅ |
+| `createddate` | string | string | ✅ |
+| `modifieddate` | string | string | ✅ |
+| `receivedat` | string | string | ✅ |
+| `merchantid` | string | string | ✅ |
+| `merchantname` | string | string | ✅ |
+| `mcc` | int | int | ✅ |
+| `customerid` | string | string | ✅ |
+| `paymentmethod` | string | string | ✅ |
+| `device` | string | string | ✅ |
+| `dt` | партиція string | **партиція string** | ✅ |
 
-SerDe, який обрав crawler: `__________`
-(очікувано `org.openx.data.jsonserde.JsonSerDe` або `org.apache.hive.hcatalog.data.JsonSerDe`)
+SerDe: `org.openx.data.jsonserde.JsonSerDe` — **той самий**, що ми написали руками.
+`classification: json`, `objectCount: 31`.
 
-Кількість партицій, які він зареєстрував: `____` (очікувано 31)
+## 1. Типи для `amount`, `ccy` і дат; чи розпізнав `dt`
 
-## Відповіді на три питання — у [../README.md](../README.md#шлях-б--glue-crawler)
+**`dt` — так, розпізнав як партицію типу `string`**, без жодних підказок:
+Hive-шаблон `dt=2026-10-01` у шляху — це конвенція, яку crawler читає
+автоматично. Усі 31 партиція зареєстровані.
+
+**Дати — `string`.** Crawler **не** намагається розпізнати ISO-8601 як
+`timestamp`. Тобто перевага ручної схеми тут нульова, але й програшу немає:
+обидві вимагають `from_iso8601_timestamp()` у кожному запиті.
+
+**`amount` і `finalAmount` — `int`, а не `bigint`.** Це єдина змістовна
+розбіжність, і вона реальна:
+
+```
+max(amount) у датасеті :     8 004 389 копійок  (80 043,89 ₴)
+int32 max              : 2 147 483 647
+запас                  : 268×
+```
+
+Поки запас 268-кратний, усе працює. Переповнення настане на платежі понад
+**21 474 836,47 ₴** — для B2B-еквайрингу це один великий рахунок. І тоді
+станеться найгірше з можливого: crawler за розкладом **мовчки змінить тип на
+`bigint`**, бо наступний семпл не влізе в int32. Усе, що читало таблицю з
+очікуванням int, зламається або почне віддавати NULL — і зламається не в
+момент деплою, а в момент надходження нетипового платежу.
+
+Ми поставили `bigint` одразу не тому, що вгадали, а тому що знаємо
+предметну область: **гроші в мінорних одиницях — завжди bigint**. Інференс
+цього знати не може, він бачить лише вибірку.
+
+### Побічна знахідка: `recordCount` у crawler-а неправильний
+
+```
+Parameters.recordCount : 1 202 922
+SELECT count(*)        : 3 030 197
+```
+
+Помилка у **2,5 раза**. Це не баг: crawler не рахує рядки, він оцінює їх за
+семплом. Але якщо хтось візьме цю цифру з каталогу для планування —
+отримає втричі занижену оцінку. Реальна кількість доступна лише запитом.
+
+## 2. Що сталося з `failureReason`
+
+Він **є** у схемі як `string` — і стоїть **останнім у списку колонок**, після
+`receivedat`, хоча в JSON-обʼєкті failure-події він іде перед `receivedAt`.
+Порядок колонок у crawler-а — це порядок, у якому він уперше зустрів ключ:
+решта 15 полів є в кожному рядку й потрапили в схему з першого ж обʼєкта, а
+`failureReason` зʼявився лише тоді, коли трапилася перша failure-подія.
+
+У JSON Lines відсутній ключ — це не помилка і не `null` у файлі, його просто
+немає в обʼєкті; JSON SerDe повертає для такої колонки `NULL`.
+
+**Але те, що він знайшовся, — це щастя, а не гарантія.** 6 % подій у нас —
+failure (60 180 платежів, рівномірно по всіх 31 файлах), тож імовірність
+промахнутися нульова. Якби поле траплялося в 0,01 % подій і лише в одному
+файлі з 31, crawler міг би його **не побачити взагалі**: він читає семпл, а не
+все. Тоді колонка просто зникає зі схеми, запити падають з
+`Column 'failurereason' cannot be resolved`, і причину шукають годину.
+
+Це фундаментальне обмеження інференсу: **він бачить тільки те, що потрапило у
+вибірку.** Інверсія проблеми гірша — якщо в одному файлі поле приходить
+числом, а в іншому рядком, crawler або зводить тип до `string`, або створює
+**дві різні таблиці** для одного префікса, вирішивши, що це різні схеми.
+
+## 3. Яка схема зручніша і чому ручні все одно пишуть
+
+**Для запитів вони майже однакові**, і це чесна відповідь. Crawler віддав
+робочу таблицю: `SELECT count(*) FROM lab8_crawled.payments` повертає ті самі
+3 030 197. Ручна краща рівно в одному місці — `bigint` замість `int` — і це
+не «зручність», а коректність на даних, яких ще немає.
+
+Чому ручні схеми все одно поширені:
+
+1. **Стабільність.** Crawler за розкладом може змінити тип колонки, і запит,
+   що працював учора, сьогодні падає. DDL у git не змінюється сам.
+2. **Схема — це контракт, і він має проходити код-рев'ю.** DDL у репозиторії
+   видно в PR: «чому тут double для грошей?» питають до релізу. Інферована
+   схема зʼявляється мовчки.
+3. **Ціна й латентність.** Crawler — окремий запуск, хвилини і гроші
+   ($0,44 за DPU-годину). `MSCK REPAIR TABLE` коштує нуль. Ще краще —
+   **partition projection**: діапазон дат описується в `TBLPROPERTIES`, і
+   Athena обчислює партиції на льоту, взагалі без звернень до каталогу.
+4. **Контроль над тим, що читається.** Ручна схема може **ігнорувати** зайві
+   поля: продюсер додав десять нових ключів — таблиця їх не бачить і нічого
+   не ламається.
+5. **Складні випадки інференс не тягне:** вкладені структури, масиви,
+   `struct<>` з опційними полями, поля, що міняють тип між версіями API.
+
+**Де crawler справді на місці:** розвідка незнайомих даних, дата-лейк із
+сотнями джерел, перший день проєкту. Типовий зрілий підхід — **crawler один
+раз для розвідки, далі згенерований DDL вичищається руками й кладеться в
+репозиторій**, а crawler вимикається.

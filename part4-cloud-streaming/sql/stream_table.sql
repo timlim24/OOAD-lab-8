@@ -59,8 +59,19 @@ ORDER BY failure_rate_pct DESC;
 
 -- 3. The partition column is PROCESSING time here, not event time.
 --    This is the query that proves it, and it is the key difference from
---    part 2. Expect a non-zero count: anything that crossed midnight, plus
---    everything if you replayed an October day today.
+--    part 2.
+--
+--    Measured result of a replay run on 2026-11-03:
+--
+--      partition_dt | earliest_event_day | latest_event_day | events
+--      2026-11-03   | 2026-10-01         | 2026-10-01       | 101084
+--
+--    ONE partition, named after the day the replay ran, holding a whole
+--    different day of business. In part 2 the identical events sat in 31
+--    partitions named after the days they happened on. Nothing is lost
+--    either way, but `WHERE dt = '2026-10-01'` returns zero rows here and
+--    the right answer there — and only one of the two tables can be used
+--    for a daily report without reading all of it.
 SELECT dt,
        min(substr(modifiedDate, 1, 10)) AS earliest_event_day,
        max(substr(modifiedDate, 1, 10)) AS latest_event_day,

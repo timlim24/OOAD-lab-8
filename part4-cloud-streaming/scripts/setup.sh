@@ -6,6 +6,9 @@
 #                        └─> Lambda ──> DynamoDB counters ──> SNS alert
 #
 #   ./setup.sh you@example.com      # the address the SNS alert goes to
+#   ./setup.sh                      # no subscription: alerts land in the
+#                                   # Lambda log and the SNS NumberOfMessages
+#                                   # Published metric, nowhere else
 #
 # Idempotent: re-running skips what already exists.
 # REMEMBER TO RUN ./teardown.sh — a shard costs $0.015/hour whether you use it
@@ -30,15 +33,10 @@ DB="${DB:-lab8}"
 
 say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 
-if [ -z "${EMAIL}" ]; then
-  echo "usage: $0 <email-for-alerts>" >&2
-  exit 1
-fi
-
 echo "account : ${ACCOUNT_ID}"
 echo "region  : ${REGION}"
 echo "bucket  : s3://${BUCKET}/${PREFIX}/"
-echo "alerts  : ${EMAIL}"
+echo "alerts  : ${EMAIL:-<no subscription — Lambda log only>}"
 
 # -----------------------------------------------------------------------------
 say "1/8  S3 bucket"
@@ -79,11 +77,18 @@ say "3/8  SNS topic + email subscription"
 # -----------------------------------------------------------------------------
 TOPIC_ARN="$(aws sns create-topic --name "${TOPIC}" --region "${REGION}" \
     --query TopicArn --output text)"
-aws sns subscribe --topic-arn "${TOPIC_ARN}" --protocol email \
-    --notification-endpoint "${EMAIL}" --region "${REGION}" >/dev/null
 echo "${TOPIC_ARN}"
-echo "CONFIRM THE SUBSCRIPTION IN YOUR MAILBOX — an unconfirmed subscription"
-echo "silently receives nothing, and you will think the alert never fired."
+if [ -n "${EMAIL}" ]; then
+  aws sns subscribe --topic-arn "${TOPIC_ARN}" --protocol email \
+      --notification-endpoint "${EMAIL}" --region "${REGION}" >/dev/null
+  echo "CONFIRM THE SUBSCRIPTION IN YOUR MAILBOX — an unconfirmed subscription"
+  echo "silently receives nothing, and you will think the alert never fired."
+else
+  echo "no subscription: sns:Publish still succeeds and is still billed, the"
+  echo "message simply has nowhere to go. Evidence that an alert fired is then"
+  echo "the Lambda log line and the SNS NumberOfMessagesPublished metric:"
+  echo "  aws logs tail /aws/lambda/${FN} --follow --region ${REGION}"
+fi
 
 # -----------------------------------------------------------------------------
 say "4/8  DynamoDB table for the window counters"

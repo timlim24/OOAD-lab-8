@@ -6,11 +6,21 @@
 -- what was actually captured, and it is zero on everything that is not a
 -- success. Summing `amount` would count money that never moved.
 --
--- / 100.0 converts minor units to major (kopiyky -> hryvni). CAST to DECIMAL
--- before dividing, not after: DECIMAL(38,0) / 100.0 keeps exact arithmetic,
--- whereas bigint / 100.0 in Presto promotes to DOUBLE and starts losing
--- kopiyky somewhere around the 15th significant digit. At 310 million UAH we
--- are at 11 digits — safe today, wrong on a bigger merchant.
+-- Converting minor units to major (kopiyky -> hryvni) needs care, and the
+-- obvious spellings are both wrong:
+--
+--   sum(finalAmount) / 100.0                      -> DOUBLE: 3.1025925921E8
+--       bigint / double promotes to double, which starts losing kopiyky
+--       around the 15th significant digit and prints in scientific notation.
+--   CAST(sum(...) AS decimal(38,0)) / 100         -> 310259259
+--       exact, but Trino takes the scale of the LEFT operand for division,
+--       so a scale of 0 silently truncates the kopiyky.
+--   CAST(sum(...) AS decimal(38,2)) / 100         -> 310259259.21  <- correct
+--       the left operand already carries the two decimal places the result
+--       needs, so the division keeps them.
+--
+-- Verified on this data: the three spellings return 3.1025925921E8,
+-- 310259259 and 310259259.21 for the same merchant.
 --
 -- We do NOT sum across currencies. 980 + 840 + 978 are three different units;
 -- adding them needs an FX rate per day, which this dataset does not carry.
@@ -22,7 +32,7 @@ SELECT
   CASE ccy WHEN 980 THEN 'UAH' WHEN 840 THEN 'USD' WHEN 978 THEN 'EUR'
            ELSE CAST(ccy AS varchar) END                       AS currency,
   count(*)                                                     AS payments,
-  CAST(sum(finalAmount) AS decimal(38,0)) / 100                AS turnover,
+  CAST(sum(finalAmount) AS decimal(38,2)) / 100                AS turnover,
   CAST(avg(finalAmount) AS decimal(38,2)) / 100                AS avg_ticket
 FROM lab8.payments
 WHERE status = 'success'

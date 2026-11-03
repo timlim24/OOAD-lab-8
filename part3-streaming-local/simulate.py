@@ -14,7 +14,7 @@ would have pushed it. Useful for two things:
     python simulate.py --file ... --grace 0        # experiment 4
     python simulate.py --file ... --fail-rate 0.3  # experiment 3
 """
-import argparse, json, random, sys
+import argparse, json, sys
 from consumer import WindowedFailureRate, parse_ts
 from producer import should_fail, make_failing
 
@@ -29,7 +29,6 @@ ap.add_argument("--fail-rate", type=float, default=0.0)
 ap.add_argument("--quiet", action="store_true", help="summary only")
 a = ap.parse_args()
 
-rng = random.Random(42)
 events = []
 with open(a.file, encoding="utf-8") as fh:
     for line in fh:
@@ -52,8 +51,9 @@ else:
 with ctx:
     for _, ev in events:
         if ev["status"] in ("success", "failure") and should_fail(ev["invoiceId"], a.fail_rate):
-            ev = make_failing(ev, rng)
+            ev = make_failing(ev)
         state.add(ev)
+        state._recompute_watermark()
         state.close_ready()
         state.evict_seen()
     state.flush_all()

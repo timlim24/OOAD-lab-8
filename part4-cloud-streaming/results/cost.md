@@ -1,45 +1,175 @@
 # Фактична вартість прогону
 
-> Cost Explorer оновлюється із затримкою до доби. Звіряти наступного дня:
-> `aws ce get-cost-and-usage --time-period Start=<день>,End=<день+1> \
->    --granularity DAILY --metrics UnblendedCost --group-by Type=DIMENSION,Key=SERVICE`
+Метрики — з CloudWatch за годину, протягом якої пройшли два повні реплеї
+(плюс кілька smoke-прогонів). Нижче перераховано **на один реплей**
+(101 084 записи).
 
-## Оцінка (прайс-лист us-east-1, 1 година, 101 084 записи)
+## Що реально пройшло через пайплайн
 
-| Сервіс | Оцінка |
-|---|---:|
-| Kinesis shard-hour | $0,0150 |
-| Kinesis PUT units | $0,0014 |
-| Firehose (0,505 ГБ після округлення до 5 КБ) | $0,0147 |
-| S3 | $0,0011 |
-| Lambda | $0,0008 |
-| DynamoDB | $0,0054 |
-| Athena | $0,0003 |
-| CloudWatch Logs | $0,0025 |
-| **Разом** | **≈ $0,041** |
+| Метрика | За годину (2 реплеї) | На один реплей |
+|---|---:|---:|
+| `Kinesis IncomingRecords` | 202 789 | 101 084 |
+| `Kinesis IncomingBytes` | 87 889 473 Б | ≈ 43,9 МБ |
+| середній розмір запису | **433 Б** | |
+| `Firehose DeliveryToS3.Records` | **202 789** | 101 084 |
+| `Lambda Invocations` | 409 | ≈ 205 |
+| `DynamoDB ConsumedWriteCapacityUnits` | 12 999 | ≈ 6 500 |
+| `SNS NumberOfMessagesPublished` | 1 271 | ≈ 635 |
 
-## Факт
+**Firehose доставив рівно стільки записів, скільки Kinesis прийняв** —
+202 789 = 202 789. Нуль втрат на цій ділянці, і це вимірювана величина, а не
+припущення.
 
-| Сервіс | $ |
+## Вартість одного реплею (прайс-лист us-east-1)
+
+| Стаття | Тариф | Обсяг | $ |
+|---|---|---:|---:|
+| Kinesis shard-hour | $0,015 / шард·год | 1 год | **0,0150** |
+| Kinesis PUT payload units | $0,014 / млн | 101 084 | 0,0014 |
+| **Firehose ingestion** | $0,029 / ГБ | **0,518 ГБ** (після округлення) | **0,0150** |
+| DynamoDB on-demand write | $1,25 / млн WCU | 6 500 | **0,0081** |
+| Lambda duration | $0,0000166667 / ГБ·с | 205 × 1,2 с × 0,25 ГБ | 0,0010 |
+| Lambda requests | $0,20 / млн | 205 | 0,00004 |
+| S3 PUT | $0,005 / 1 000 | ≈ 60 файлів | 0,0003 |
+| S3 storage | $0,023 / ГБ·міс | 44 МБ | 0,0010 |
+| Athena | $5 / ТБ, мін. 10 МБ | ≈ 10 запитів | 0,0005 |
+| CloudWatch Logs | $0,50 / ГБ | ≈ 3 МБ | 0,0015 |
+| SNS | перші 1 млн безкоштовно | 635 | 0 |
+| | | **Разом** | **≈ $0,044** |
+
+## Три цифри, які варто пояснити
+
+**1. Firehose: 43,9 МБ даних, платимо за 518 МБ.** Firehose округлює
+**кожен запис до 5 КБ**. Наші — 433 байти, тобто
+`5120 / 433 = 11,8×` переплати: `101 084 × 5 КБ = 518 МБ` замість 43,9 МБ.
+Це найбільша стаття разом із шардом, і вона цілком рукотворна: якби продюсер
+пакував по 10 платежів в один запис (~4,3 КБ), рахунок Firehose упав би
+майже вдесятеро.
+
+**2. DynamoDB коштує дорожче за Lambda у 8 разів.** $0,0081 проти $0,0010 —
+**зберігання стану дорожче за обчислення над ним**. Це прямий аргумент за
+Flink: там ті самі лічильники живуть у keyed state у памʼяті воркера й
+чекпоінтяться пачкою, а не записуються по одному запиту на вікно на батч.
+Наш Lambda робить ~32 `UpdateItem` на інвокацію (по одному на комірку
+вікно×метод у батчі) — і кожен це окремий мережевий похід.
+
+**3. Шард коштує однаково, чи тече через нього щось.** $0,015/год — це
+$0,36/добу, **$10,95/місяць** за шард, який нічого не робить. Для порівняння:
+Redpanda в Docker за той самий місяць — $0.
+
+## Троттлінг: 1 шард виявився замалим
+
+Два прогони того самого дня, різниця лише в `--rate`:
+
+| | `--rate 150` | `--rate 200` |
+|---|---:|---:|
+| sent | 101 084 | 101 084 |
+| **throttled** | **0** | **69 162** |
+| DROPPED | 0 | 0 |
+| wall time | 222,7 с | 216,5 с |
+| фактичний темп | **149,8 платежів/с** | **154,1** (замовлено 200) |
+
+Один шард тримає 1 000 записів/с або 1 МіБ/с. При 150 платежах/с це 450
+подій/с у середньому — із запасом. При 200 середнє вже 600 подій/с, а на
+вечірньому піку профіль доби втричі щільніший, і стеля пробивається. Отже
+**стеля одного шарда для цього профілю лежить між 150 і 200 платежами/с** —
+і визначає її не середнє навантаження, а пік.
+
+Цифра 69 162 рахує всі відхилення, включно з повторними для одного запису.
+
+Важливо, що **жоден запис не загубився**:
+
+```
+sent      : 101,084 records for 33,361 payments
+throttled : 69,162 (retried)
+wall time : 216.5s (154.1 payments/s)
+```
+
+Рядка `DROPPED` немає в жодному прогоні, і Athena бачить рівно 101 084
+події. `PutRecords`
+повертає **HTTP 200** з полем `FailedRecordCount` — задроселений запис це
+поле в успішній відповіді, не виняток. Цикл у
+[producer_kinesis.py](../producer_kinesis.py) перевідправляє **тільки
+відхилені** записи з експоненційним backoff; перевідправка всього батчу
+продублювала б ті, що пройшли. Код, який ловив би лише exceptions, тут
+мовчки втратив би дві третини даних.
+
+Ціна троттлінгу — час: 216,5 с замість розрахункових 167, тобто **фактичні
+154 платежі/с замість замовлених 200**. Kinesis не відмовляє — він
+пригальмовує, і побачити це можна тільки в полях відповіді. Пайплайн, який
+не рахує `FailedRecordCount`, виглядатиме здоровим і при цьому тихо
+відставатиме.
+
+## Якщо масштабувати до повного датасету
+
+| | наш реплей | 3 млн подій/добу |
+|---|---:|---:|
+| Kinesis шардів | 1 | 1 (35 подій/с) |
+| Kinesis / міс | — | $10,95 + $1,26 = **$12,21** |
+| Firehose / міс (по 5 КБ) | — | 450 ГБ × $0,029 = **$13,05** |
+| Firehose / міс (пакуючи по 10) | — | **$1,36** |
+| DynamoDB / міс | — | ≈ **$7,30** |
+| S3 + Lambda + Athena / міс | — | ≈ $3 |
+| **Разом** | **$0,044** | **≈ $36/міс** (або $24 з пакуванням) |
+
+Еквівалентний self-hosted Kafka — мінімум три `t3.medium` у різних AZ
+(≈ $90/міс) плюс людина, яка їх обслуговує. **Перелом не в ціні заліза, а в
+ціні години інженера.**
+
+## Звірка в Cost Explorer
+
+Білінг відстає до доби. Наступного дня:
+
+```bash
+aws ce get-cost-and-usage \
+  --time-period Start=2026-11-03,End=2026-11-04 \
+  --granularity DAILY --metrics UnblendedCost \
+  --group-by Type=DIMENSION,Key=SERVICE
+```
+
+| Сервіс | $ (факт) |
 |---|---:|
 | Amazon Kinesis | |
 | Amazon Data Firehose | |
+| Amazon DynamoDB | |
 | Amazon S3 | |
 | AWS Lambda | |
-| Amazon DynamoDB | |
 | Amazon Athena | |
 | AmazonCloudWatch | |
 | **Разом** | |
 
 ## Чи все видалено
 
+`./teardown.sh` виконано. Перевірка:
+
 ```bash
-aws kinesis list-streams --region us-east-1
-aws firehose list-delivery-streams --region us-east-1
-aws lambda list-functions --query 'Functions[?starts_with(FunctionName,`ooad-lab8`)].FunctionName'
-aws dynamodb list-tables
+aws kinesis list-streams --region us-east-1 --query StreamNames --output text
+aws firehose list-delivery-streams --region us-east-1 --query DeliveryStreamNames --output text
+aws lambda list-functions --query 'Functions[?starts_with(FunctionName,`ooad-lab8`)].FunctionName' --output text
+aws dynamodb list-tables --query TableNames --output text
+aws sns list-topics --query 'Topics[?contains(TopicArn,`ooad-lab8`)]' --output text
 ```
 
-```
-<вставити вивід — має бути порожньо>
+Усі пʼять повертають **порожньо**. Жодної shard-години більше не
+нараховується.
+
+### Що лишилося свідомо
+
+| Ресурс | Чому лишився | Вартість |
+|---|---|---|
+| S3: `payments/` 1,26 ГБ, `curated/` 88 МБ, `stream/` 42 МБ | щоб запити Athena з частин 2 і 4 відтворювалися | **$0,033/міс** |
+| Glue Data Catalog: таблиці + 62 партиції | те саме | $0 (free tier — перший 1 млн обʼєктів) |
+| Роль `AWSGlueServiceRole-ooad-lab8` + crawler | щоб можна було перезапустити Шлях Б | $0 у спокої |
+
+Три центи на місяць — ціна того, що результати лабораторної лишаються
+перевірюваними. Видалити все остаточно:
+
+```bash
+./teardown.sh --all
+aws s3 rb s3://ooad-lab8-payments-<ACCOUNT_ID> --force
+aws glue delete-crawler --name ooad-lab8-payments-crawler
+aws iam delete-role-policy --role-name AWSGlueServiceRole-ooad-lab8 --policy-name read-ooad-lab8-payments-<ACCOUNT_ID>
+aws iam detach-role-policy --role-name AWSGlueServiceRole-ooad-lab8 \
+    --policy-arn arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+aws iam delete-role --role-name AWSGlueServiceRole-ooad-lab8
 ```

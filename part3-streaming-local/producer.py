@@ -23,7 +23,6 @@ agree.
 import argparse
 import hashlib
 import json
-import random
 import sys
 import time
 from datetime import datetime
@@ -74,17 +73,26 @@ def load(path: str):
     return events
 
 
-def make_failing(ev: dict, rng: random.Random) -> dict:
+def make_failing(ev: dict) -> dict:
     """Turn a terminal event into a failure.
 
     Keeps the record self-consistent, because the consumer trusts it:
     finalAmount must go to 0 (no money captured) and failureReason must appear
     (it is absent on every non-failure event in the real data).
+
+    The reason is DERIVED FROM THE invoiceId, not drawn from an RNG. That is
+    not a stylistic choice. ~1% of the events in this dataset are byte-identical
+    redeliveries, and a per-call rng.choice() hands the two copies of one event
+    two different reasons — which stops them being duplicates at all. Measured:
+    with rng.choice the day's duplicate count fell from 1 001 to 920, i.e. the
+    failure injection silently destroyed 8% of exactly the thing this lab is
+    about detecting. Deriving from the id keeps every copy identical.
     """
+    digest = hashlib.sha256(("reason:" + ev["invoiceId"]).encode()).digest()
     ev = dict(ev)
     ev["status"] = "failure"
     ev["finalAmount"] = 0
-    ev["failureReason"] = rng.choice(FAILURE_REASONS)
+    ev["failureReason"] = FAILURE_REASONS[digest[0] % len(FAILURE_REASONS)]
     return ev
 
 
@@ -117,10 +125,7 @@ def main() -> int:
                     help="experiment 3: force this share of payments to fail")
     ap.add_argument("--max-payments", type=int, default=None,
                     help="stop after N payments (for a quick smoke test)")
-    ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
-
-    rng = random.Random(args.seed)
 
     print(f"loading {args.file} ...", flush=True)
     events = load(args.file)
@@ -191,7 +196,7 @@ def main() -> int:
             if ev["status"] in ("success", "failure") and should_fail(inv, args.fail_rate):
                 if ev["status"] == "success":
                     forced += 1
-                ev = make_failing(ev, rng)
+                ev = make_failing(ev)
 
             # Sleep until this event is due. Recomputed against wall_start every
             # time rather than accumulating sleeps, so a slow send does not make
