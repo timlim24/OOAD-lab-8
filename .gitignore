@@ -13,3 +13,6 @@ part2-batch-athena/sql.rendered/
 
 # rendered with the real bucket name (contains the AWS account id)
 part4-cloud-streaming/sql.rendered/
+
+# venv for building the submission PDFs
+.venv-doc/

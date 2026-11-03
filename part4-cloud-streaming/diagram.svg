@@ -89,7 +89,7 @@
   <path d="M400 280 C 430 280, 430 167, 454 167" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#ar)"/>
   <path d="M400 330 C 430 330, 430 451, 454 451" stroke="#b45309" stroke-width="2" fill="none" marker-end="url(#arHot)"/>
   <text x="408" y="214" class="lbl">читач 1</text>
-  <text x="408" y="404" class="lblH">читач 2</text>
+  <text x="404" y="348" class="lblH">читач 2</text>
 
   <path d="M600 167 L644 167" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#ar)"/>
   <path d="M790 167 L834 167" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#ar)"/>
@@ -101,14 +101,14 @@
   <text x="930" y="528" class="lblH" text-anchor="middle">затримка: ~10–15 с (батч Lambda)</text>
 
   <!-- key note -->
-  <rect x="40" y="398" width="370" height="114" fill="#fef2f2" stroke="#fca5a5" stroke-width="1.5" rx="10"/>
-  <text x="58" y="422" font-size="12" font-weight="700" fill="#b91c1c">Головна відмінність від частини 2</text>
-  <text x="58" y="443" class="s">Firehose партиціонує за <tspan font-weight="600">часом прибуття</tspan> (processing</text>
-  <text x="58" y="459" class="s">time), а не за часом події. Платіж о 23:59:58, що</text>
-  <text x="58" y="475" class="s">доїхав о 00:00:03, потрапляє в <tspan font-weight="600">завтрашню</tspan> партицію.</text>
-  <text x="58" y="494" class="s">Денний звіт по такому dt — ніколи не рівно доба.</text>
+  <rect x="40" y="412" width="370" height="114" fill="#fef2f2" stroke="#fca5a5" stroke-width="1.5" rx="10"/>
+  <text x="58" y="436" font-size="12" font-weight="700" fill="#b91c1c">Головна відмінність від частини 2</text>
+  <text x="58" y="457" class="s">Firehose партиціонує за <tspan font-weight="600">часом прибуття</tspan> (processing</text>
+  <text x="58" y="473" class="s">time), а не за часом події. Платіж о 23:59:58, що</text>
+  <text x="58" y="489" class="s">доїхав о 00:00:03, потрапляє в <tspan font-weight="600">завтрашню</tspan> партицію.</text>
+  <text x="58" y="508" class="s">Денний звіт по такому dt — ніколи не рівно доба.</text>
 
   <!-- one shard note -->
-  <text x="325" y="392" class="s" text-anchor="middle">два незалежні читачі одного стріму:</text>
-  <text x="325" y="407" class="s" text-anchor="middle">кожен має власну позицію в лозі</text>
+  <text x="325" y="388" class="s" text-anchor="middle">два незалежні читачі</text>
+  <text x="325" y="402" class="s" text-anchor="middle">одного стріму</text>
 </svg>

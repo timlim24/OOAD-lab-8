@@ -1,0 +1,5 @@
+"paymentMethod","terminal","failures","failure_rate_pct"
+"apple_pay","8412","2896","34.43"
+"qr","700","241","34.43"
+"card","18406","6336","34.42"
+"google_pay","5843","1991","34.07"
